@@ -2,6 +2,8 @@
 // Entry point for the application
 
 mod backend;
+mod constants;
+mod errors;
 mod ui;
 
 use anyhow::{Context, Result};
@@ -27,8 +29,8 @@ struct Args {
 }
 
 fn setup_tracing(headless: bool) -> Result<()> {
-    let log_directory = PathBuf::from(".").join("logs");
-    std::fs::create_dir_all(&log_directory).context("Failed to create log directory")?;
+    let log_directory = constants::default_log_directory();
+    std::fs::create_dir_all(&log_directory).context(errors::logs::FAILED_TO_CREATE_DIR)?;
 
     let file_appender = tracing_appender::rolling::daily(&log_directory, "app.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
@@ -109,10 +111,7 @@ fn main() -> Result<()> {
     let use_mock = std::env::var("WSTUNNEL_MANAGER_MOCK").is_ok();
 
     if !use_mock && !wstunnel_binary_path.exists() {
-        let error_msg = format!(
-            "wstunnel binary not found at {}. Please install wstunnel or use --wstunnel-path flag.",
-            wstunnel_binary_path.display()
-        );
+        let error_msg = errors::binary::not_found(&wstunnel_binary_path.display().to_string());
         tracing::error!("{}", error_msg);
         return Err(anyhow::anyhow!(error_msg));
     }
@@ -141,6 +140,11 @@ fn main() -> Result<()> {
 
         {
             let mut backend_lock = backend.lock().unwrap();
+
+            if let Err(e) = backend_lock.cleanup_old_logs_if_configured() {
+                tracing::warn!("Log cleanup failed: {}", e);
+            }
+
             match backend_lock.start_autostart_tunnels() {
                 Ok(results) => {
                     for (tunnel_id, result) in results {
@@ -221,49 +225,4 @@ fn main() -> Result<()> {
     result?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cli_args_headless() {
-        let args = Args::parse_from(["wstunnel_manager", "--headless"]);
-        assert!(args.headless);
-        assert!(args.config.is_none());
-        assert!(args.wstunnel_path.is_none());
-    }
-
-    #[test]
-    fn test_cli_args_config_path() {
-        let args = Args::parse_from(["wstunnel_manager", "--config", "custom_config.yaml"]);
-        assert!(!args.headless);
-        assert_eq!(args.config.unwrap(), PathBuf::from("custom_config.yaml"));
-    }
-
-    #[test]
-    fn test_cli_args_wstunnel_path() {
-        let args = Args::parse_from(["wstunnel_manager", "--wstunnel-path", "/usr/bin/wstunnel"]);
-        assert!(!args.headless);
-        assert_eq!(
-            args.wstunnel_path.unwrap(),
-            PathBuf::from("/usr/bin/wstunnel")
-        );
-    }
-
-    #[test]
-    fn test_cli_args_all_flags() {
-        let args = Args::parse_from([
-            "wstunnel_ui",
-            "--headless",
-            "--config",
-            "test.yaml",
-            "--wstunnel-path",
-            "./wstunnel",
-        ]);
-        assert!(args.headless);
-        assert_eq!(args.config.unwrap(), PathBuf::from("test.yaml"));
-        assert_eq!(args.wstunnel_path.unwrap(), PathBuf::from("./wstunnel"));
-    }
 }

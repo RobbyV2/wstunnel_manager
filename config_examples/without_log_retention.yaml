@@ -1,0 +1,11 @@
+version: 1
+global:
+  wstunnel_binary_path: "./wstunnel"
+  log_directory: "./logs"
+
+tunnels:
+  - id: "550e8400-e29b-41d4-a716-446655440000"
+    tag: "Example tunnel"
+    cli_args: "client -L socks5://127.0.0.1:1080 wss://example.com:443"
+    autostart: true
+

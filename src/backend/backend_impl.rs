@@ -1,11 +1,13 @@
 use crate::backend::Backend;
 use crate::backend::process::ProcessInstance;
 use crate::backend::types::{Config, ProcessId, TunnelEntry, TunnelId, TunnelRuntimeState};
+use crate::errors;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub struct BackendState {
@@ -16,6 +18,7 @@ pub struct BackendState {
     wstunnel_binary_path: PathBuf,
     cancellation_token: CancellationToken,
     runtime_handle: tokio::runtime::Handle,
+    cleanup_task: Option<JoinHandle<()>>,
 }
 
 impl BackendState {
@@ -31,15 +34,72 @@ impl BackendState {
                 Config::default()
             });
 
+        let config_arc = Arc::new(ArcSwap::from_pointee(config));
+        let cancellation_token = CancellationToken::new();
+
+        let cleanup_task = Self::spawn_periodic_cleanup_task(
+            config_arc.clone(),
+            runtime_handle.clone(),
+            cancellation_token.clone(),
+        );
+
         Self {
-            config: Arc::new(ArcSwap::from_pointee(config)),
+            config: config_arc,
             processes: HashMap::new(),
             last_known_log_paths: HashMap::new(),
             config_path,
             wstunnel_binary_path,
-            cancellation_token: CancellationToken::new(),
+            cancellation_token,
             runtime_handle,
+            cleanup_task: Some(cleanup_task),
         }
+    }
+
+    fn spawn_periodic_cleanup_task(
+        config: Arc<ArcSwap<Config>>,
+        runtime_handle: tokio::runtime::Handle,
+        cancellation_token: CancellationToken,
+    ) -> JoinHandle<()> {
+        runtime_handle.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let current_config = config.load();
+                        match current_config.global.log_retention_days {
+                            Some(days) => {
+                                tracing::info!(
+                                    "Running periodic log cleanup for logs older than {} days",
+                                    days
+                                );
+                                match crate::backend::config::cleanup_old_logs(
+                                    &current_config.global.log_directory,
+                                    days,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        tracing::debug!("Periodic log cleanup completed successfully");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Periodic log cleanup failed: {}", e);
+                                    }
+                                }
+                            }
+                            None => {
+                                tracing::debug!("Log retention not configured, skipping periodic cleanup");
+                            }
+                        }
+                    }
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Periodic cleanup task cancelled");
+                        break;
+                    }
+                }
+            }
+        })
     }
 
     fn cleanup_dead_processes(&mut self) {
@@ -108,7 +168,7 @@ impl Backend for BackendState {
 
     fn add_tunnel(&mut self, mut entry: TunnelEntry) -> Result<TunnelId> {
         self.validate_tunnel_entry(&entry)
-            .context("Failed to validate tunnel entry")?;
+            .context(errors::tunnel::validation::failed("tunnel entry"))?;
 
         if entry.id == TunnelId::default() {
             entry.id = TunnelId::new();
@@ -118,14 +178,14 @@ impl Backend for BackendState {
         new_config.tunnels.push(entry.clone());
         new_config
             .validate()
-            .context("Configuration validation failed after adding tunnel")?;
+            .context(errors::config::validation_failed_after_add())?;
 
         let config_path = self.config_path.clone();
         self.runtime_handle
             .block_on(async {
                 crate::backend::config::save_config(&config_path, &new_config).await
             })
-            .context("Failed to save configuration to disk")?;
+            .context(errors::config::SAVE_FAILED)?;
 
         self.config.store(Arc::new(new_config));
         tracing::info!("Added tunnel: {}", entry.tag);
@@ -134,11 +194,11 @@ impl Backend for BackendState {
 
     fn edit_tunnel(&mut self, id: TunnelId, entry: TunnelEntry) -> Result<()> {
         self.validate_tunnel_entry(&entry)
-            .context("Failed to validate tunnel entry")?;
+            .context(errors::tunnel::validation::failed("tunnel entry"))?;
 
         anyhow::ensure!(
             !self.is_tunnel_running(id),
-            "Cannot edit tunnel while it is running. Stop the tunnel first."
+            errors::tunnel::CANNOT_EDIT_RUNNING
         );
 
         let mut new_config = (*self.config.load_full()).clone();
@@ -146,20 +206,20 @@ impl Backend for BackendState {
             .tunnels
             .iter()
             .position(|t| t.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel with ID {:?} not found in configuration", id))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
         let old_tag = new_config.tunnels[tunnel_index].tag.clone();
         new_config.tunnels[tunnel_index] = entry.clone();
         new_config
             .validate()
-            .context("Configuration validation failed after editing tunnel")?;
+            .context(errors::config::validation_failed_after_edit())?;
 
         let config_path = self.config_path.clone();
         self.runtime_handle
             .block_on(async {
                 crate::backend::config::save_config(&config_path, &new_config).await
             })
-            .context("Failed to save configuration to disk")?;
+            .context(errors::config::SAVE_FAILED)?;
 
         self.config.store(Arc::new(new_config));
         tracing::info!("Edited tunnel: {} -> {}", old_tag, entry.tag);
@@ -176,7 +236,7 @@ impl Backend for BackendState {
             .tunnels
             .iter()
             .position(|t| t.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel with ID {:?} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
         let removed_tunnel = new_config.tunnels.remove(tunnel_index);
 
@@ -222,22 +282,17 @@ impl Backend for BackendState {
     fn start_tunnel(&mut self, id: TunnelId) -> Result<ProcessId> {
         let config = self.config.load();
 
-        let tunnel =
-            config.tunnels.iter().find(|t| t.id == id).ok_or_else(|| {
-                anyhow::anyhow!("Tunnel with ID {:?} not found in configuration", id)
-            })?;
+        let tunnel = config
+            .tunnels
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
         if let Some(process) = self.processes.get(&id) {
             if process.pid().is_some() {
-                anyhow::bail!(
-                    "Tunnel '{}' is already running. Stop it before starting again.",
-                    tunnel.tag
-                );
+                anyhow::bail!(errors::tunnel::already_running(&tunnel.tag));
             } else {
-                anyhow::bail!(
-                    "Tunnel '{}' is currently starting or stopping. Please wait.",
-                    tunnel.tag
-                );
+                anyhow::bail!(errors::tunnel::transitional_state(&tunnel.tag));
             }
         }
 
@@ -249,8 +304,7 @@ impl Backend for BackendState {
 
         anyhow::ensure!(
             binary_path.exists(),
-            "wstunnel binary not found at path: {}. Please check the binary path configuration or use --wstunnel-path flag.",
-            binary_path.display()
+            errors::binary::not_found(&binary_path.display().to_string())
         );
 
         let cli_args = tunnel.cli_args.clone();
@@ -274,11 +328,11 @@ impl Backend for BackendState {
                 )
                 .await
             })
-            .with_context(|| format!("Failed to start tunnel '{}'", tunnel_tag))?;
+            .with_context(|| errors::tunnel::failed_to_start(&tunnel_tag))?;
 
         let pid = process_instance
             .pid()
-            .context("Failed to get process ID after spawning tunnel")?;
+            .context(errors::process::FAILED_TO_PROCESS_PID)?;
 
         tracing::info!("Started tunnel '{}' with PID {}", tunnel_tag, pid);
 
@@ -293,10 +347,10 @@ impl Backend for BackendState {
         let process_instance = self
             .processes
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel is not running"))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::NOT_RUNNING))?;
 
         if process_instance.pid().is_none() {
-            anyhow::bail!("Tunnel is already stopping or has stopped");
+            anyhow::bail!(errors::tunnel::ALREADY_STOPPING);
         }
 
         let mut process_instance = self.processes.remove(&id).unwrap();
@@ -439,6 +493,12 @@ impl Backend for BackendState {
 
         self.cancellation_token.cancel();
 
+        if let Some(task) = self.cleanup_task.take() {
+            task.abort();
+            let _ = self.runtime_handle.block_on(task);
+            tracing::info!("Periodic cleanup task stopped");
+        }
+
         let tunnel_ids: Vec<TunnelId> = self.processes.keys().copied().collect();
 
         for tunnel_id in tunnel_ids {
@@ -454,5 +514,21 @@ impl Backend for BackendState {
         tracing::info!("Backend shutdown complete");
 
         Ok(())
+    }
+
+    fn cleanup_old_logs_if_configured(&self) -> Result<()> {
+        let config = self.config.load();
+
+        match config.global.log_retention_days {
+            Some(days) => crate::backend::config::cleanup_old_logs_sync(
+                &self.runtime_handle,
+                &config.global.log_directory,
+                days,
+            ),
+            None => {
+                tracing::debug!("Log retention not configured, skipping log cleanup");
+                Ok(())
+            }
+        }
     }
 }

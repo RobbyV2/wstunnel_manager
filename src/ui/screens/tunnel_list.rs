@@ -145,7 +145,7 @@ pub fn tunnel_list_view(
     let scrollable_content = scrollable(content).height(Length::Fill).width(Length::Fill);
 
     let header = row![
-        text("wstunnel Manager").size(24),
+        text(crate::constants::APP_TITLE).size(24),
         container(button("Add Tunnel").on_press(Message::TunnelList(TunnelListMessage::AddTunnel)))
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Right),

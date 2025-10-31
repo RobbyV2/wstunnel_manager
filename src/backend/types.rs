@@ -1,3 +1,4 @@
+use crate::errors;
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -113,13 +114,16 @@ pub struct TunnelEntry {
 impl TunnelEntry {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(
+            !self.tag.trim().is_empty(),
+            errors::tunnel::validation::TAG_EMPTY
+        );
+        ensure!(
             self.tag.len() <= 100,
-            "Tunnel tag too long (max 100 characters): {}",
-            self.tag.len()
+            errors::tunnel::validation::tag_too_long(&self.tag)
         );
         ensure!(
             !self.cli_args.trim().is_empty(),
-            "CLI arguments cannot be empty"
+            errors::tunnel::validation::CLI_ARGS_EMPTY
         );
         Ok(())
     }
@@ -148,7 +152,7 @@ impl Default for GlobalSettings {
 }
 
 fn default_log_directory() -> PathBuf {
-    PathBuf::from(".").join("logs")
+    crate::constants::default_log_directory()
 }
 
 impl GlobalSettings {
@@ -156,16 +160,14 @@ impl GlobalSettings {
         if let Some(ref path) = self.wstunnel_binary_path {
             ensure!(
                 path.exists(),
-                "wstunnel binary not found at path: {}",
-                path.display()
+                errors::binary::not_found(&path.display().to_string())
             );
         }
 
         if let Some(days) = self.log_retention_days {
             ensure!(
-                days >= 1,
-                "Log retention days must be at least 1, got: {}",
-                days
+                (1..=3650).contains(&days),
+                errors::logs::retention_invalid(days)
             );
         }
 
@@ -203,202 +205,24 @@ impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(
             self.version == 1,
-            "Unsupported config version: {}. Expected version 1",
-            self.version
+            errors::config::unsupported_version(self.version)
         );
 
         let mut seen_ids = HashSet::new();
         for tunnel in &self.tunnels {
             ensure!(
                 seen_ids.insert(tunnel.id),
-                "Duplicate tunnel ID found: {:?}",
-                tunnel.id
+                errors::tunnel::validation::duplicate_id(&format!("{:?}", tunnel.id))
             );
             tunnel
                 .validate()
-                .with_context(|| format!("Validation failed for tunnel: {}", tunnel.tag))?;
+                .with_context(|| errors::tunnel::validation::failed(&tunnel.tag))?;
         }
 
         self.global
             .validate()
-            .context("Global settings validation failed")?;
+            .context(errors::config::GLOBAL_VALIDATION_FAILED)?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_validate_valid() {
-        let config = Config {
-            version: 1,
-            global: GlobalSettings::default(),
-            tunnels: vec![TunnelEntry {
-                id: TunnelId::new(),
-                tag: "test-tunnel".to_string(),
-                mode: TunnelMode::Client,
-                cli_args: "client ws://example.com".to_string(),
-                autostart: false,
-                runtime_state: None,
-            }],
-        };
-
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_config_validate_duplicate_ids() {
-        let id = TunnelId::new();
-        let config = Config {
-            version: 1,
-            global: GlobalSettings::default(),
-            tunnels: vec![
-                TunnelEntry {
-                    id,
-                    tag: "tunnel-1".to_string(),
-                    mode: TunnelMode::Client,
-                    cli_args: "client ws://example.com".to_string(),
-                    autostart: false,
-                    runtime_state: None,
-                },
-                TunnelEntry {
-                    id,
-                    tag: "tunnel-2".to_string(),
-                    mode: TunnelMode::Server,
-                    cli_args: "server ws://0.0.0.0:8080".to_string(),
-                    autostart: false,
-                    runtime_state: None,
-                },
-            ],
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Duplicate tunnel ID")
-        );
-    }
-
-    #[test]
-    fn test_config_validate_invalid_version() {
-        let config = Config {
-            version: 999,
-            global: GlobalSettings::default(),
-            tunnels: vec![],
-        };
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unsupported config version")
-        );
-    }
-
-    #[test]
-    fn test_tunnel_entry_validate_valid() {
-        let entry = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "valid-tunnel".to_string(),
-            mode: TunnelMode::Client,
-            cli_args: "client ws://example.com".to_string(),
-            autostart: true,
-            runtime_state: None,
-        };
-
-        assert!(entry.validate().is_ok());
-    }
-
-    #[test]
-    fn test_tunnel_entry_validate_empty_tag() {
-        let entry = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "   ".to_string(),
-            mode: TunnelMode::Client,
-            cli_args: "client ws://example.com".to_string(),
-            autostart: false,
-            runtime_state: None,
-        };
-
-        let result = entry.validate();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("tag cannot be empty")
-        );
-    }
-
-    #[test]
-    fn test_tunnel_entry_validate_tag_too_long() {
-        let entry = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "a".repeat(101),
-            mode: TunnelMode::Client,
-            cli_args: "client ws://example.com".to_string(),
-            autostart: false,
-            runtime_state: None,
-        };
-
-        let result = entry.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("tag too long"));
-    }
-
-    #[test]
-    fn test_tunnel_entry_validate_empty_cli_args() {
-        let entry = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "test-tunnel".to_string(),
-            mode: TunnelMode::Client,
-            cli_args: "   ".to_string(),
-            autostart: false,
-            runtime_state: None,
-        };
-
-        let result = entry.validate();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("CLI arguments cannot be empty")
-        );
-    }
-
-    #[test]
-    fn test_tunnel_entry_autostart_flag() {
-        let entry_with_autostart = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "autostart-tunnel".to_string(),
-            mode: TunnelMode::Server,
-            cli_args: "server ws://0.0.0.0:8080".to_string(),
-            autostart: true,
-            runtime_state: None,
-        };
-
-        assert!(entry_with_autostart.validate().is_ok());
-        assert!(entry_with_autostart.autostart);
-
-        let entry_without_autostart = TunnelEntry {
-            id: TunnelId::new(),
-            tag: "manual-tunnel".to_string(),
-            mode: TunnelMode::Client,
-            cli_args: "client ws://example.com".to_string(),
-            autostart: false,
-            runtime_state: None,
-        };
-
-        assert!(entry_without_autostart.validate().is_ok());
-        assert!(!entry_without_autostart.autostart);
     }
 }

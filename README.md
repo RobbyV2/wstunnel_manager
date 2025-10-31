@@ -23,7 +23,7 @@ A cross-platform GUI application for managing multiple wstunnel instances. Built
 
 ```bash
 # Clone with submodules
-git clone --recursive <repository-url>
+git clone --recursive https://github.com/RobbyV2/wstunnel_manager.git
 cd wstunnel_manager
 
 # Or initialize submodules if already cloned
@@ -50,34 +50,13 @@ just src run-mock
 
 ## Configuration
 
-Configuration is stored in `config.yaml` (created automatically on first run). Example:
-
-```yaml
-version: 1
-global:
-  wstunnel_binary_path: "./wstunnel.exe" # Optional: custom binary path
-  log_directory: "./logs" # Optional: custom log directory
-  log_retention_days: 7 # Optional: auto-delete old logs
-
-tunnels:
-  - id: "550e8400-e29b-41d4-a716-446655440000"
-    tag: "SSH to production server"
-    mode: Client
-    cli_args: "-L socks5://127.0.0.1:1080 wss://production.example.com:443"
-    autostart: true
-
-  - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
-    tag: "HTTP tunnel"
-    mode: Server
-    cli_args: "wss://0.0.0.0:443 -r tcp://127.0.0.1:8080"
-    autostart: false
-```
+Configuration is stored in `config.yaml` (created automatically on first run). Examples are in `./config_examples`
 
 ## Usage
 
 ### GUI Mode
 
-1. Launch the application with `just src run` or `./wstunnel_manager.exe`
+1. Launch the application with `just src run` or `./target/wstunnel_manager`
 2. Click "Add" to create a new tunnel configuration
 3. Fill in the tunnel details:
    - Tag: A descriptive name for the tunnel
@@ -94,13 +73,13 @@ For server deployments or automation:
 
 ```bash
 # Run with default config (./config.yaml)
-./wstunnel_manager.exe --headless
+./wstunnel_manager --headless
 
 # Run with custom config path
-./wstunnel_manager.exe --headless --config /path/to/config.yaml
+./wstunnel_manager --headless --config /path/to/config.yaml
 
 # Run with custom wstunnel binary
-./wstunnel_manager.exe --headless --wstunnel-path /path/to/wstunnel
+./wstunnel_manager --headless --wstunnel-path /path/to/wstunnel
 ```
 
 Headless mode:
@@ -178,4 +157,4 @@ Access logs by:
 
 ## Future
 
-- [ ] Make it so that headless mode has more useful commands, like a status command
+- Make it so that headless mode has more useful commands, like a status command

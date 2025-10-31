@@ -40,4 +40,7 @@ pub trait Backend: Send + Sync {
 
     // Lifecycle
     fn shutdown(&mut self) -> Result<()>;
+
+    // Maintenance
+    fn cleanup_old_logs_if_configured(&self) -> Result<()>;
 }

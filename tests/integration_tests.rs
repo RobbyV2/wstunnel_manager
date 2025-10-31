@@ -47,16 +47,11 @@ fn test_autostart_integration() {
 
     let results = backend.start_autostart_tunnels();
 
-    match results {
-        Ok(result_list) => {
-            assert_eq!(result_list.len(), 1);
-            let (tunnel_id, result) = &result_list[0];
-            assert_eq!(*tunnel_id, autostart_tunnel.id);
-            assert!(result.is_err() || result.is_ok());
-        }
-        Err(_) => {
-            assert!(true);
-        }
+    if let Ok(result_list) = results {
+        assert_eq!(result_list.len(), 1);
+        let (tunnel_id, result) = &result_list[0];
+        assert_eq!(*tunnel_id, autostart_tunnel.id);
+        assert!(result.is_err() || result.is_ok());
     }
 
     std::fs::remove_dir_all(&temp_dir).ok();

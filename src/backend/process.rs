@@ -1,4 +1,5 @@
 use crate::backend::types::{ProcessId, Timestamp, TunnelId};
+use crate::errors;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,21 +116,17 @@ pub async fn spawn_tunnel_process(binary_path: &PathBuf, cli_args: &str) -> Resu
         if error_msg.contains("No such file or directory")
             || error_msg.contains("cannot find the path")
         {
-            anyhow::anyhow!(
-                "wstunnel binary not found at {}. Please verify the binary path.",
-                binary_path.display()
-            )
+            anyhow::anyhow!(errors::binary::not_found_simple(
+                &binary_path.display().to_string()
+            ))
         } else if error_msg.contains("Permission denied") {
-            anyhow::anyhow!(
-                "Permission denied executing wstunnel binary at {}. Check file permissions.",
-                binary_path.display()
-            )
+            anyhow::anyhow!(errors::binary::permission_denied(
+                &binary_path.display().to_string()
+            ))
         } else if error_msg.contains("Address already in use") {
-            anyhow::anyhow!(
-                "Port is already in use. The tunnel may be using a port that is already bound."
-            )
+            anyhow::anyhow!(errors::process::PORT_IN_USE)
         } else {
-            anyhow::anyhow!("Failed to spawn wstunnel process: {}", error_msg)
+            anyhow::anyhow!(errors::process::spawn_failed(&error_msg))
         }
     })?;
 
@@ -143,7 +140,7 @@ pub async fn create_process_instance(
     log_directory: &PathBuf,
     cancellation_token: CancellationToken,
 ) -> Result<ProcessInstance> {
-    let pid = child.id().context("Failed to get process ID")?;
+    let pid = child.id().context(errors::process::FAILED_TO_GET_PID)?;
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
 
     let sanitized_name = if tunnel_name.is_empty() {
@@ -157,17 +154,23 @@ pub async fn create_process_instance(
 
     tokio::fs::create_dir_all(log_directory)
         .await
-        .context("Failed to create log directory")?;
+        .context(errors::logs::FAILED_TO_CREATE_DIR)?;
 
     let log_file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .await
-        .context("Failed to create log file")?;
+        .context(errors::logs::FAILED_TO_CREATE_FILE)?;
 
-    let stdout = child.stdout.take().context("Failed to capture stdout")?;
-    let stderr = child.stderr.take().context("Failed to capture stderr")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context(errors::process::FAILED_TO_CAPTURE_STDOUT)?;
+    let stderr = child
+        .stderr
+        .take()
+        .context(errors::process::FAILED_TO_CAPTURE_STDERR)?;
 
     let log_path_clone = log_path.clone();
     let monitor_token = cancellation_token.clone();
@@ -195,9 +198,9 @@ pub async fn create_process_instance(
                             let log_line = format!("[{}] [STDOUT] {}\n", timestamp, line);
                             if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut log_writer, log_line.as_bytes()).await {
                                 if e.to_string().contains("No space left on device") || e.to_string().contains("disk full") {
-                                    tracing::error!("Disk full - cannot write to log file: {}", log_path_clone.display());
+                                    tracing::error!("{}", errors::disk::full_log_write(&log_path_clone.display().to_string()));
                                 } else {
-                                    tracing::error!("Failed to write stdout to log: {}", e);
+                                    tracing::error!("{}", errors::logs::failed_to_write_stdout(&e.to_string()));
                                 }
                                 break;
                             }
@@ -228,9 +231,9 @@ pub async fn create_process_instance(
 
                             if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut log_writer, log_line.as_bytes()).await {
                                 if e.to_string().contains("No space left on device") || e.to_string().contains("disk full") {
-                                    tracing::error!("Disk full - cannot write to log file: {}", log_path_clone.display());
+                                    tracing::error!("{}", errors::disk::full_log_write(&log_path_clone.display().to_string()));
                                 } else {
-                                    tracing::error!("Failed to write stderr to log: {}", e);
+                                    tracing::error!("{}", errors::logs::failed_to_write_stderr(&e.to_string()));
                                 }
                                 break;
                             }
@@ -249,7 +252,7 @@ pub async fn create_process_instance(
         }
 
         if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut log_writer).await {
-            tracing::error!("Failed to flush log file: {}", e);
+            tracing::error!("{}", errors::logs::failed_to_flush(&e.to_string()));
         }
     });
 

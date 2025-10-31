@@ -5,6 +5,7 @@ pub mod theme;
 
 use crate::backend::Backend;
 use crate::backend::types::{TunnelEntry, TunnelId, TunnelMode};
+use crate::errors;
 use messages::{ConfirmDeleteMessage, EditTunnelMessage, Message, TunnelListMessage};
 use state::{ConfirmDeleteState, EditTunnelState, Screen};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,10 @@ impl WstunnelManagerApp {
     pub fn new(backend: Arc<Mutex<dyn Backend>>) -> Self {
         let tunnels = {
             let mut backend_lock = backend.lock().unwrap();
+
+            if let Err(e) = backend_lock.cleanup_old_logs_if_configured() {
+                tracing::warn!("Log cleanup failed: {}", e);
+            }
 
             match backend_lock.start_autostart_tunnels() {
                 Ok(results) => {
@@ -59,7 +64,7 @@ impl WstunnelManagerApp {
     }
 
     pub fn title(&self) -> String {
-        String::from("wstunnel Manager")
+        crate::constants::APP_TITLE.to_string()
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
@@ -112,7 +117,8 @@ impl WstunnelManagerApp {
                             ));
                         }
                         None => {
-                            state.error_message = Some(format!("Tunnel not found: {:?}", id));
+                            state.error_message =
+                                Some(errors::tunnel::not_found(&format!("{:?}", id)));
                         }
                     }
                     iced::Task::none()
@@ -126,7 +132,8 @@ impl WstunnelManagerApp {
                             ));
                         }
                         None => {
-                            state.error_message = Some(format!("Tunnel not found: {:?}", id));
+                            state.error_message =
+                                Some(errors::tunnel::not_found(&format!("{:?}", id)));
                         }
                     }
                     iced::Task::none()
@@ -180,14 +187,14 @@ impl WstunnelManagerApp {
                                         match open::that(&path) {
                                             Ok(_) => Ok(()),
                                             Err(e) => {
-                                                Err(format!("Failed to open log file: {}", e))
+                                                Err(errors::logs::failed_to_open(&e.to_string()))
                                             }
                                         }
                                     } else {
-                                        Err(format!("Log file not found at: {}", path.display()))
+                                        Err(errors::logs::not_found(&path.display().to_string()))
                                     }
                                 }
-                                None => Err("Tunnel is not running or has no logs".to_string()),
+                                None => Err(errors::tunnel::NO_LOGS.to_string()),
                             }
                         },
                         |result| match result {

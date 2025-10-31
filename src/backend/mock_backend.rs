@@ -2,6 +2,7 @@ use crate::backend::Backend;
 use crate::backend::types::{
     Config, ProcessId, Timestamp, TunnelEntry, TunnelId, TunnelRuntimeState,
 };
+use crate::errors;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
@@ -104,7 +105,7 @@ impl Backend for MockBackend {
 
         anyhow::ensure!(
             !self.is_tunnel_running(id),
-            "Cannot edit tunnel while it is running. Stop the tunnel first."
+            errors::tunnel::CANNOT_EDIT_RUNNING
         );
 
         let mut new_config = (*self.config.load_full()).clone();
@@ -112,7 +113,7 @@ impl Backend for MockBackend {
             .tunnels
             .iter()
             .position(|t| t.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel with ID {:?} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
         new_config.tunnels[tunnel_index] = entry;
         new_config.validate()?;
@@ -136,7 +137,7 @@ impl Backend for MockBackend {
             .tunnels
             .iter()
             .position(|t| t.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel with ID {:?} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
         let removed_tunnel = new_config.tunnels.remove(tunnel_index);
 
@@ -183,9 +184,12 @@ impl Backend for MockBackend {
             .tunnels
             .iter()
             .find(|t| t.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel with ID {:?} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::not_found(&format!("{:?}", id))))?;
 
-        anyhow::ensure!(!self.is_tunnel_running(id), "Tunnel is already running");
+        anyhow::ensure!(
+            !self.is_tunnel_running(id),
+            errors::tunnel::already_running(&tunnel.tag)
+        );
 
         let fake_pid = Self::generate_fake_pid();
 
@@ -217,7 +221,7 @@ impl Backend for MockBackend {
         let _process = self
             .mock_processes
             .remove(&id)
-            .ok_or_else(|| anyhow::anyhow!("Tunnel is not running"))?;
+            .ok_or_else(|| anyhow::anyhow!(errors::tunnel::NOT_RUNNING))?;
 
         tracing::info!("MOCK: Stopping tunnel {:?}", id);
 
@@ -321,5 +325,24 @@ impl Backend for MockBackend {
         tracing::info!("MOCK: Backend shutdown complete");
 
         Ok(())
+    }
+
+    fn cleanup_old_logs_if_configured(&self) -> Result<()> {
+        let config = self.config.load();
+
+        match config.global.log_retention_days {
+            Some(days) => {
+                tracing::info!(
+                    "MOCK: Would clean up logs older than {} days in {}",
+                    days,
+                    config.global.log_directory.display()
+                );
+                Ok(())
+            }
+            None => {
+                tracing::debug!("Log retention not configured, skipping log cleanup");
+                Ok(())
+            }
+        }
     }
 }
