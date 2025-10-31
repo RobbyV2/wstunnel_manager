@@ -1,0 +1,28 @@
+# Rust build artifacts
+target/
+*.rs.bk
+*.rlib
+
+# Cargo lock (for binary projects, you may want to commit this)
+# Uncomment if needed: Cargo.lock
+
+# Project-specific
+logs/
+temp/
+build/
+test/
+config.yaml
+
+# Log files
+**/*.log
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

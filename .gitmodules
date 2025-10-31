@@ -1,0 +1,3 @@
+[submodule "wstunnel"]
+	path = wstunnel
+	url = https://github.com/erebe/wstunnel.git
