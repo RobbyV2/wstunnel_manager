@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release
+        run: cargo build --release
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wstunnel_manager-windows-x86_64
+          path: target/release/wstunnel_manager.exe
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release
+        run: cargo build --release
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wstunnel_manager-linux-x86_64
+          path: target/release/wstunnel_manager
+
+  release:
+    name: Create Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          version=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Cargo version: $version"
+      - name: Get tag name
+        id: tag
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "Tag: $tag"
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wstunnel_manager-windows-x86_64
+          path: artifacts/windows
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wstunnel_manager-linux-x86_64
+          path: artifacts/linux
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          files: |
+            artifacts/windows/wstunnel_manager.exe
+            artifacts/linux/wstunnel_manager
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

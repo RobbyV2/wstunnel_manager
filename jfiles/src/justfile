@@ -1,6 +1,7 @@
 import "../common.just"
 import "./build.just"
 import "./test.just"
+
 # Default recipe
 default:
   just --list
@@ -28,3 +29,6 @@ get-submodules:
 # Update submodules
 update-submodules:
     git submodule update --recursive --remote --merge
+
+tag_and_push tag:
+    cd {{ROOT}} && git tag {{tag}} && git push origin {{tag}}
